@@ -17,10 +17,10 @@ Examples statistics
 
 leader election (using function symbols, btw relation, and not putting "leader(X) -> idn(Y)<=idn(X)" in the original safety property):
 sorts: 2 - node, id
-relations and function symbols (counting only btw and not ring.le): 5 - ring.btw, le, leader, pending, idn
+relations and function symbols: 5 - ring.btw, le, leader, pending, idn
 number of literals in safety property: 3
-number of literals in invariant: 9
-number of CTI iterations : 3, including that leader has highest id
+number of literals in invariant (including safety property): 12
+number of CTI iterations : 3
 
 learning switch (with route.dom, hosts and switches are both nodes):
 sorts: 2 - node, packet
@@ -29,11 +29,19 @@ number of literals in safety property: 11 (the conjectures that come from the mo
 number of literals in invariant: 15 (not counting the conjectures that come from the module)
 number of CTI iterations : 5
 
+learning switch no dom  (without route.dom, hosts and switches are both nodes):
+sorts: 2 - node, packet
+relations and function symbols: 5 - route.tc, pending, link, src, dst
+number of literals in safety property: 11 (the conjectures that come from the module)
+number of literals in invariant: 7 (not counting the conjectures that come from the module)
+number of CTI iterations : 3
+
+
 database chain replication (version of artifact evaluation, not using functoin symbols):
-sorts: 4
+sorts: 4 - transaction, node, key, operation
 relations and function symbols: 13
 number of literals in safety property: 11
-number of literals in invariant: 35
+number of literals in invariant (including safety property): 35
 number of CTI iterations : 7
 
 chord (version of artifact evaluation, not using functoin symbols):
@@ -61,13 +69,13 @@ verdi mutex:
 sorts: 5 - client, lock_m, unlock_m, grant_m, list_elem
 relations and function symbols: 11 counting everything - waiting.empty, waiting.le, waiting.at_head, waiting.data, pending*3, fld*3, has_lock
 number of literals in safety property: 3
-number of literals in invariant: 18
+number of literals in invariant (including safety property): 21
 number of CTI iterations : 8
 
 ironfleet toy lock mutex:
 sorts: 2 - node, epoch
 relations and function symbols: 5 - le, ep, held, transfer, locked (not counting constants zero, first)
 number of literals in safety property: 3
-number of literals in invariant: 46 (initial attempt, before removal of redundent clauses)
-number of literals in invariant: 23 (after removal of redundent clauses, which can be automated)
+number of literals in invariant (including safety property): 49 (initial attempt, before removal of redundent clauses)
+number of literals in invariant (including safety property): 26 (after removal of redundent clauses, which can be automated)
 number of CTI iterations : 12 (initial attempt)
