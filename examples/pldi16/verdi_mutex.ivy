@@ -195,15 +195,25 @@ export receive_grant
 #conjecture ~has_lock(C1)
 
 # The safety property is that no two different clients have the lock
-#conjecture has_lock(X) & has_lock(Y) -> X=Y  # TODO: check why this lead to a sort error!
 conjecture has_lock(C1) & has_lock(C2) -> C1 = C2
 
-# obtained interactively via CTI's (Oded spent 11 minutes going through this)
-conjecture ~(grant_msg.pending(G0) & ~waiting.at_head(grant_msg.fld(G0)))
-conjecture ~(grant_msg.pending(G0) & unlock_msg.pending(U0))
-conjecture ~(has_lock(C0) & ~waiting.at_head(C0))
-conjecture ~(has_lock(C0) & unlock_msg.pending(U0))
-conjecture ~(grant_msg.pending(G0) & has_lock(C0))
-conjecture ~(unlock_msg.pending(U0) & ~waiting.at_head(unlock_msg.fld(U0)))
-conjecture ~(grant_msg.pending(G0) & grant_msg.pending(G1) & G1 ~= G0)
-conjecture ~(unlock_msg.pending(U0) & unlock_msg.pending(U1) & U1 ~= U0)
+# obtained interactively via CTI's (took less than an hour)
+# conjecture ~(grant_msg.pending(G0) & ~waiting.at_head(grant_msg.fld(G0)))
+# conjecture ~(grant_msg.pending(G0) & unlock_msg.pending(U0))
+# conjecture ~(has_lock(C0) & ~waiting.at_head(C0))
+# conjecture ~(has_lock(C0) & unlock_msg.pending(U0))
+# conjecture ~(grant_msg.pending(G0) & has_lock(C0))
+# conjecture ~(unlock_msg.pending(U0) & ~waiting.at_head(unlock_msg.fld(U0)))
+# conjecture ~(grant_msg.pending(G0) & grant_msg.pending(G1) & G1 ~= G0)
+# conjecture ~(unlock_msg.pending(U0) & unlock_msg.pending(U1) & U1 ~= U0)
+
+# obtained interactively via CTI's at the Skype demo with the Verdi team, took about an hour
+# (minimization of has_lock lock_msg.pending unlock_msg.pending grant_msg.pending waiting.le)
+# ~(has_lock(C0) & ~waiting.at_head(C0))
+# ~(grant_msg.pending(G0) & ~waiting.at_head(grant_msg.fld(G0)))
+# ~(grant_msg.pending(G0) & unlock_msg.pending(U0))
+# ~(grant_msg.pending(G0) & has_lock(C0))
+# ~(unlock_msg.pending(U0) & ~waiting.at_head(unlock_msg.fld(U0)))
+# ~(has_lock(C0) & unlock_msg.pending(U0))
+# ~(unlock_msg.pending(U0) & unlock_msg.pending(U1) & U1 ~= U0)
+# ~(grant_msg.pending(G0) & grant_msg.pending(G1) & G1 ~= G0)
