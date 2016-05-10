@@ -1,0 +1,537 @@
+#lang ivy1.3
+# James Wilcox & Oded Padon 2016
+#
+# A model of the Raft consensus protocol from Ongaro and Ousterhout.
+#
+#
+# See [the paper](https://ramcloud.stanford.edu/wiki/download/attachments/11370504/raft.pdf)
+# or [the dissertation](https://ramcloud.stanford.edu/~ongaro/raftproof.pdf)
+# for more details about Raft.
+
+
+################################################################################
+#
+# Module for axiomatizing a totally ordered set with fixed order
+#
+# The module includes an le relation, a minimal element (zero) and
+# get_next and get_prev actions.
+#
+# In this module, the order is arbitrary and fixed.
+#
+################################################################################
+
+module total_order(carrier) = {
+    relation le(X:carrier,Y:carrier)   # less than or equal
+
+    axiom le(X, X)                        # Reflexivity
+    axiom le(X, Y) & le(Y, Z) -> le(X, Z) # Transitivity
+    axiom le(X, Y) & le(Y, X) -> X = Y    # Anti-symmetry
+    axiom le(X, Y) | le(Y, X)             # Totality
+
+    individual zero:carrier
+    axiom le(zero, X)
+
+    action get_next(x:carrier) returns (y:carrier) = {
+       assume le(x,y) & x ~= y & ((le(x, Z) & x ~= Z) -> le(y, Z))
+    }
+
+    action get_prev(y:carrier) returns (x:carrier) = {
+       assume le(x,y) & x ~= y & ((le(x, Z) & x ~= Z) -> le(y, Z))
+    }
+}
+
+
+################################################################################
+#
+# A module for messages, with message reordering and duplication#
+#
+# To be consistent with message cardinality abstraction, use tuple
+# (extensional) types for messages
+#
+################################################################################
+
+module msg(m_t) = {
+    relation pending(M: m_t, N: node)
+    init ~pending(M, N)
+    individual source(M: m_t): node
+
+    action receive(n: node) returns (m: m_t) = {
+        assume pending(m, n);
+        pending(m, n) := * # to abstract message cardinality (which allows duplicates)
+    }
+}
+
+
+################################################################################
+#
+# Types, relations and functions describing state of the network
+#
+################################################################################
+
+type node
+
+# Each node is either a leader, follower, or candidate.
+relation leader(N:node)
+relation follower(N:node)
+relation candidate(N:node)
+conjecture leader(N) | follower(N) | candidate(N)
+conjecture ~(leader(N) & follower(N))
+conjecture ~(leader(N) & candidate(N))
+conjecture ~(follower(N) & candidate(N))
+init ~leader(N)
+init follower(N)
+init ~candidate(N)
+
+# In Raft, a term is a non-negative integer. But it is sufficient to
+# model terms as a total order with an initial element.
+type term
+instantiate term : total_order(term)
+
+# In Raft, indices are non-negative integers, but we model them as a
+# totally ordered set.
+type index
+instantiate index : total_order(index)
+
+# Each node has a current term, initially zero.  We model this by a
+# partial function, as a real function breaks stratification and is
+# not requires for the proof
+relation current_term_of_node(N: node, T: term)
+init current_term_of_node(N, T) <-> T = term.zero
+conjecture current_term_of_node(N, T1) & current_term_of_node(N, T2) -> T1 = T2
+
+# The following two message types represent the request and reply to a
+# RequestVote RPC.
+
+
+# request vote messages
+type request_vote_t
+instantiate request_vote : msg(request_vote_t)
+# message fields:
+individual request_vote_term(M:request_vote_t) : term
+individual request_vote_last_log_index(M:request_vote_t): index
+individual request_vote_last_log_term(M:request_vote_t): term
+# extensionality axiom - request_vote_t is a tuple
+axiom (
+    request_vote.source(M1) = request_vote.source(M2) &
+    request_vote_term(M1) = request_vote_term(M2) &
+    request_vote_last_log_index(M1) = request_vote_last_log_index(M2) &
+    request_vote_last_log_term(M1) = request_vote_last_log_term(M2)
+) -> M1 = M2
+
+
+# request vote reply messages
+type request_vote_reply_t
+instantiate request_vote_reply : msg(request_vote_reply_t)
+# message fields:
+individual request_vote_reply_term(M:request_vote_reply_t) : term
+# extensionality axiom - request_vote_reply_t is a tuple
+axiom (
+    request_vote_reply.source(M1) = request_vote_reply.source(M2) &
+    request_vote_reply_term(M1) = request_vote_reply_term(M2)
+) -> M1 = M2
+
+
+# The votedFor  field from the paper.
+# In practice, this information is only kept for the current term,
+# but it is useful for verification to keep the entire history.
+relation voted_for(T: term, VOTER: node, CANDIDATE: node)
+init ~voted_for(T, V, C)
+# this is an intended partial function
+conjecture voted_for(T,N,N1) & voted_for(T,N,N2) -> N1 = N2
+
+# When a candidate receives a vote from another node, it records it here.
+# In practive, this would be kept only for the current term.
+relation received_votes(T: term, CANDIDATE:node, VOTER: node)
+init ~received_votes(T, C, V)
+
+# A type representing a quorum of nodes; see concensus_quorum.ivy for
+# another example of how this can be used.
+type quorum
+relation member(N:node, Q:quorum)
+# Every two quorums has at least one node in their intersection,
+# witnessed by the following function:
+individual quorum_intersection(Q1:quorum, Q2:quorum) : node
+# The function has to actually pick out a node that is a member of
+# each quorum.
+axiom member(quorum_intersection(Q1, Q2), Q1)
+axiom member(quorum_intersection(Q1, Q2), Q2)
+# This seems reasonable from a practical perspective, but it's not
+# actually needed.
+#   axiom exists Q:quorum. member(N, Q)
+# Note that this axiom will immediately break stratification
+
+# For the purposes of verification, it is useful to remember which
+# quorum was responsible for electing the leader in each term.
+# This would not be used in practice.
+# Note: this replaces a forall exists in the invariant
+# Note: we do not parametrise this by the node, as this would break stratification
+individual quorum_of_election(T: term): quorum
+
+
+# Servers log
+# Each log entry contains
+#   * a client command to execute
+#   * the term of the leader that received the command from the client
+#
+# In practice, entries contain information such as the id of the
+# client that sent the request etc. All of this is represented by the
+# command element here.
+#
+# The log is modeled as partial functions from node,index to commands and terms
+# note that the first log entry goes at index one and not zero
+
+# A request from an external client.
+type command
+
+relation log_command(N:node, I:index, C:command)
+relation log_term(N:node, I:index, T:term)
+# assume that initially there is a common command in all logs, at index zero and term zero
+individual first_command : command
+init log_command(N, I, C) <-> I = index.zero & C = first_command
+init log_term(N, I, T) <-> I = index.zero & T = term.zero
+conjecture log_command(N, index.zero, first_command)
+conjecture log_term(N, index.zero, term.zero)
+conjecture log_command(N, I, C1) & log_command(N, I, C2) -> C1 = C2
+conjecture log_term(N, I, T1) & log_term(N, I, T2) -> T1 = T2
+
+# We have to keep the last used log index in a function (and not
+# recover it from log_command and log_term). Otherwise a candidate
+# might send a request_to_vote, and then forget all of its log.
+#
+# individual last_log_index(N:node) : index
+#
+# Maybe we don't need this, since forgetting something from the log
+# requires dropping a command or a term, which means that all nodes
+# will "forget" the same entry together. I'll try without it for now.
+
+action get_last_log_entry_of_node(n:node) returns (i:index) = {
+    # return the last index from n's log (note that we assume the log isn't empty, which is ok due to first_command).
+    local t:term {
+        assume log_term(n, i, t)
+    };
+    assume (log_term(n, I, T) | log_command(n, I, C)) -> index.le(I, i)
+}
+
+# Each node stores the index of highest log entry known to be
+# comitted, initially zero
+individual commit_index(N:node) : index
+init commit_index(N) = index.zero
+
+# As with leader election, it is useful to remember the quorum used to
+# commit an entry. Again, note that we do not parameterize this by the
+# node.
+individual commit_quorum(I:index) : quorum
+
+# Leaders store for each server, the index of the highest log entry
+# known to be replicated on the server. Note that index refers to
+# index in the leader's log. This is reinialized to zero after every election
+individual match_index(L:node, N:node) : index
+init match_index(L, N) = index.zero
+
+# The following two types represent the request and reply messages for
+# the AppendEntries RPC.  For simplicity, this model only allows one
+# entry to be sent in each AppendEntries RPC.
+
+# append entry messages (called simply append here)
+type append_t
+instantiate append : msg(append_t)
+# message fields:
+individual append_leader_term(M:append_t) : term
+individual append_prev_log_index(M:append_t): index
+individual append_prev_log_term(M:append_t): term
+individual append_new_command(M:append_t): command
+individual append_new_term(M:append_t): term
+individual append_leader_commit_index(M:append_t): index
+# extensionality axiom - append_t is a tuple
+axiom (
+    append.source(M1) = append.source(M2) &
+    append_leader_term(M1) = append_leader_term(M2) &
+    append_prev_log_index(M1) = append_prev_log_index(M2) &
+    append_prev_log_term(M1) = append_prev_log_term(M2) &
+    append_new_command(M1) = append_new_command(M2) &
+    append_new_term(M1) = append_new_term(M2) &
+    append_leader_commit_index(M1) = append_leader_commit_index(M2)
+) -> M1 = M2
+
+# append entry reply messages (called append_reply here)
+#
+# an append reply means is sent after a successful append to the log,
+# with the prev_log_index field copied from the append message.  Note
+# that the reply actually means a log entry was successfully put in
+# position prev_log_index+1.
+#
+type append_reply_t
+instantiate append_reply : msg(append_reply_t)
+# message fields:
+individual append_reply_prev_log_index(M:append_reply_t): index
+# extensionality axiom - append_reply_t is a tuple
+axiom (
+    append_reply.source(M1) = append_reply.source(M2) &
+    append_reply_prev_log_index(M1) = append_reply_prev_log_index(M2)
+) -> M1 = M2
+
+
+# General note about reply messages (both request_vote and append):
+# failed messages are just not sent, and the term used for the
+# candidate/leader to update itself is abstracted away, and replaced
+# by the action jump_to_higher_term
+
+
+################################################################################
+#
+# Protocol actions for leader election
+#
+################################################################################
+
+action start_election = {
+    # Nondeterministic event to go to the next term and try to become
+    # leader. In practice, this would be triggered by a timeout.
+
+    local n:node, current_term: term, next_term:term, m:request_vote_t, log_i:index, log_t:term {
+        # only a follower or a candidate start a new election
+        assume ~leader(n);
+
+        # increase current term
+        assume current_term_of_node(n, current_term);
+        next_term := term.get_next(current_term);
+        current_term_of_node(n, T) := T = next_term;
+
+        # become candidate
+        candidate(n) := true;
+        follower(n) := false;
+        leader(n) := false;
+
+        # send a request_vote message
+        #
+        # note that a tuple type is "immutable", so we assume instead
+        # of assign to create a tuple
+        #
+        assume request_vote.source(m) = n;
+        assume request_vote_term(m) = next_term;
+        # log_i, log_t should be the last index and term in n's log,
+        # but it suffices just to assume that they are in n's log, not
+        # necessarily from the last entry
+        log_i := get_last_log_entry_of_node(n);
+        assume log_term(n, log_i, log_t);
+        assume request_vote_last_log_index(m) = log_i;
+        assume request_vote_last_log_term(m) = log_t;
+        # send the message to everyone
+        request_vote.pending(m, N) := true;
+
+        # vote for self and initialize received_votes
+        voted_for(next_term, n, N) := N = n;
+        received_votes(next_term, n, N) := N = n
+    }
+}
+
+action jump_to_higher_term = {
+    # Any node can nondeterministically become a follower with a
+    # higher term. This models receiving an RPC request or response
+    # with a higher term
+    local n:node, current_term: term, new_term:term {
+        assume current_term_of_node(n, current_term);
+        assume term.le(current_term, new_term) & current_term ~= new_term;
+        current_term_of_node(n, T) := T = new_term;
+        candidate(n) := false;
+        follower(n) := true;
+        leader(n) := false
+    }
+}
+
+action receive_request_vote = {
+    # receive a request_vote message. Due to jump_to_higher_term, we
+    # only need to handle the case that the recieving node is a
+    # follower, and the receiving node's term exactly matches the term
+    # in the request. Note that this increases the number of protocol
+    # steps needed to make progress, which may not be a good thing
+    # (but on the other hand this simplifies each step).
+    #
+    # Note that since we only need to send a successful reply, we can
+    # ignore requests that will not succeed. Thus, many things that
+    # are "if" in the implementation become "assume" here
+    local n:node, current_term:term, m:request_vote_t, i1:index, i2:index, t1:term, t2:term, r:request_vote_reply_t {
+        assume follower(n);
+        assume current_term_of_node(n, current_term);
+        m := request_vote.receive(n);
+        assume current_term = request_vote_term(m);
+
+        # assume we haven't voted for anyone in this term
+        assume ~voted_for(current_term, n, C:node);
+
+        # assume the log of the candidate is at least as "up-to-date"
+        # as n's log (see section 5.4.1 in the paper)
+        i1 := get_last_log_entry_of_node(n);
+        assume log_term(n, i1, t1);
+        i2 := request_vote_last_log_index(m);
+        t2 := request_vote_last_log_term(m);
+        # assume (t1, i1) <= (t2, i2) lexicographically
+        assume (t1 ~= t2 & term.le(t1, t2)) | (t1 = t2 & index.le(i1, i2));
+
+        # vote for source of m
+        voted_for(current_term, n, request_vote.source(m)) := true;
+        # send request_vote_reply
+        assume request_vote_reply.source(r) = n;
+        assume request_vote_reply_term(r) = request_vote_term(m);
+        request_vote_reply.pending(r, request_vote.source(m)) := true
+    }
+}
+
+action receive_request_vote_reply = {
+    local n:node, current_term:term, m:request_vote_reply_t {
+        assume candidate(n);
+        assume current_term_of_node(n, current_term);
+        m := request_vote_reply.receive(n);
+        assume current_term = request_vote_reply_term(m);
+        received_votes(request_vote_reply_term(m), n, request_vote_reply.source(m)) := true
+    }
+}
+
+action become_leader = {
+    # Nondeterministically become leader if received votes from a
+    # quorum. In practice this would be checked for when processing a
+    # RequestVote reply.
+    local n:node, current_term:term, q:quorum {
+        assume candidate(n);
+        assume current_term_of_node(n, current_term);
+        assume member(V, q) -> received_votes(current_term, n, V);
+        quorum_of_election(current_term) := q;
+        candidate(n) := false;
+        follower(n) := false;
+        leader(n) := true;
+        match_index(n, N) := index.zero
+    }
+}
+
+# export leader election actions
+
+export start_election
+export jump_to_higher_term
+export receive_request_vote
+export receive_request_vote_reply
+export become_leader
+
+################################################################################
+#
+# Protocol actions for log replication
+#
+################################################################################
+
+
+# # Nondeterministically receive a request from the outside world.
+# action client_request = {
+#     local l:node, current_term:term, c:command, e:ent, i:index {
+#         assume current_term_of_node(l, current_term);
+#         assume tag_of_node(l) = leader;
+#         assume ~log(e, N);  # e has not been used yet
+#         assume log(E, l) -> (index_le(index_of_ent(E), i) & index_of_ent(e) ~= i);
+#         # need some way of enforcing that i is *smallest* unused index
+#         command_of(e) := c;
+#         term_of_ent(e) := current_term;
+#         index_of_ent(e) := i;
+#         log(e, l) := true
+#     }
+# }
+
+
+# action send_ae = {
+#     local l:node, current_term:term, ae:append_ent_t, e:ent, prev:ent {
+#         assume current_term_of_node(l, current_term);
+#         assume tag_of_node(l) = leader;
+#         assume ~append_ent.pending(ae, N);
+#         assume log(e, l) & log(prev, l);
+#         assume (log(E, l) & index_le(index_of_ent(prev), index_of_ent(E)) & index_le(index_of_ent(E), index_of_ent(e))) -> (E = e | E = prev);
+#         ent_of_ae(ae) := e;
+#         prev_of(ae) := e;
+#         append_ent.source_of(ae) := l;
+#         append_ent.term_of(ae) := current_term;
+#         append_ent.pending(ae, N) := true
+#     }
+# }
+
+
+# action receive_ae = {
+#     local n:node, current_term:term, ae:append_ent_t, aer:append_ent_reply_t {
+#         assume current_term_of_node(n, current_term);
+#         assume append_ent.pending(ae, n);
+#         assume ~append_ent_reply.pending(aer, N);
+#         if term_le(current_term, append_ent.term_of(ae)) {
+#             if current_term ~= append_ent.term_of(ae) {
+#                 current_term_of_node(n, current_term) := false;
+#                 current_term_of_node(n, append_ent.term_of(ae)) := true;
+#                 tag_of_node(n) := follower
+#             };
+#             local current_term:term {
+#                 assume current_term_of_node(n, current_term);
+
+#                 if log(prev_of(ae), n) & ~log(ent_of_ae(ae), n) { # TODO: check that there are new entries
+#                     log(E, n) := log(E, n) & index_le(index_of_ent(E), index_of_ent(prev_of(ae)));
+#                     log(ent_of_ae(ae), n) := true;
+#                     ent_of_aer(aer) := ent_of_ae(ae);
+#                     append_ent_reply.term_of(aer) := current_term;
+#                     append_ent_reply.source_of(aer) := n;
+#                     append_ent_reply.pending(aer, append_ent.source_of(ae)) := true
+#                 }
+#             }
+#         }
+#     }
+# }
+
+# action receive_aer = {
+#     local n:node, current_term:term, aer:append_ent_reply_t {
+#         assume current_term_of_node(n, current_term);
+#         assume append_ent_reply.pending(aer, n);
+#         if current_term = append_ent_reply.term_of(aer) {
+#             matches(n, append_ent_reply.source_of(aer), E) := matches(n, append_ent_reply.source_of(aer), E) | (log(E, n) & index_le(index_of_ent(E), index_of_ent(ent_of_aer(aer))))
+#         }
+#     }
+# }
+
+
+# # Nondeterministically commit an entry. In practice this would be
+# # checked for when processing an AppendEntry response.
+# action commit = {
+#     local n:node, q:quorum, e:ent, t:term {
+#         assume current_term_of_node(n, t); # bogus
+#         assume log(e, n);
+#         assume member(N, q) -> matches(n, N, e);
+#         assume tag_of_node(n) = leader;
+#         quorum_of_ent(e) := q;
+#         committed(e) := true
+#     }
+# }
+
+# export client_request
+# export send_ae
+# export receive_ae
+# export receive_aer
+# export commit
+
+################################################################################
+#
+# Safety property
+#
+################################################################################
+
+# Bogus conjecture to ensure that it is possible to elect a leader with three nodes and interesting quorums
+#conjecture ~(leader(N1) & N1 ~= N2 & N1 ~= N3 & N2 ~= N3 & ~member(N1, Q1) & ~member(N2, Q2) & ~member(N3, Q3))
+
+# Election safety invariant from the paper:
+conjecture leader(N1) & leader(N2) & current_term_of_node(N1, T) & current_term_of_node(N2, T) -> N1 = N2
+
+# election safety invariant adapted from Jame's cleaned up invariant:
+conjecture ~(request_vote_reply.pending(R,N) & ~voted_for(request_vote_reply_term(R),request_vote_reply.source(R),N))
+conjecture ~(current_term_of_node(L,T) & member(V,quorum_of_election(T)) & leader(L) & ~received_votes(T,L,V))
+conjecture ~(received_votes(T,N,V) & ~voted_for(T,V,N))
+conjecture ~(current_term_of_node(V, CT) & term.le(CT,T) & voted_for(T,V,N) & CT ~= T)
+
+# # log matching
+
+# conjecture log(E1, N1) & log(E1, N2) & index_le(index_of_ent(E2), index_of_ent(E1)) -> log(E2, N1) = log(E2, N2)
+
+
+# # Bogus conjecture to ensure it is possible to commit an entry.
+# # Spins out with a depth bound of around 8 or 9.
+# # conjecture ~committed(E)
+
+# # conjecture committed(E) & current_term_of_node(L, T) & term_le(term_of_ent(E), T) & tag_of_node(L) = leader -> log(E, L)
+# # conjecture committed(E) & member(N, quorum_of_ent(E)) -> log(E, N)
