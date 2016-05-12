@@ -187,6 +187,9 @@ individual quorum_of_election(T: term): quorum
 # client that sent the request etc. All of this is represented by the
 # command element here.
 #
+# For verification, we keep the log as a partial function from
+# node,term to log_entry, where log_entry is a tuple of term,command
+#
 # The log is modeled as partial functions from node,index to commands and terms
 # note that the first log entry goes at index one and not zero
 
