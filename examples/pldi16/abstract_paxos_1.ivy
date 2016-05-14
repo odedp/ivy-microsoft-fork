@@ -1,0 +1,132 @@
+#lang ivy1.3
+
+module total_order(r) = {
+    axiom r(X,X)                        # Reflexivity
+    axiom r(X, Y) & r(Y, Z) -> r(X, Z)  # Transitivity
+    axiom r(X, Y) & r(Y, X) -> X = Y    # Anti-symmetry
+    axiom r(X, Y) | r(Y, X)             # Totality
+}
+
+type node
+type value
+type quorum
+type round
+
+individual round0 : round
+relation le(X:round, Y:round)
+instantiate total_order(le)
+axiom le(round0, X)
+
+relation member(N:node, Q:quorum)
+# forall Q1 Q2 exists N. member(N, Q1) & member(N, Q2)
+individual quorum_intersection(Q1:quorum, Q2:quorum) : node  # a Skolem function
+axiom member(quorum_intersection(Q1, Q2), Q1)
+axiom member(quorum_intersection(Q1, Q2), Q2)
+
+relation proposal(R1:round, V:value) # 2a
+relation vote(N:node, R:round, V:value) # 2b
+relation decision(R:round, V:value) # got 2b from a quorum
+relation rnd(N:node, R:round) # current round
+
+# 1b messages
+type msg1b_t
+# message fields:
+individual leader_round(M:msg1b_t) : round
+individual last_round(M:msg1b_t) : round
+individual last_vote(M:msg1b_t) : value
+# extensionality axiom - msg1b_t is a tuple
+axiom (
+    leader_round(M1) = leader_round(M2) &
+    last_round(M1) = last_round(M2) &
+    last_vote(M1) = last_vote(M2)
+) -> M1 = M2
+relation msg1b(M:msg1b_t, N:node)
+
+# ghost functions for recording the existence of quorums
+individual quorum_of_proposal(R:round) : quorum
+individual quorum_of_decision(R:round) : quorum
+
+init ~proposal(R1,V)
+init ~vote(N,R,V)
+init ~decision(R,V)
+init rnd(N, R) <-> R = round0
+init ~msg1b(M, N)
+
+action cast_vote = {
+  # phase 2b
+  local n1:node, v1:value, r1:round {
+    assume rnd(n1, r1);
+    assume ~vote(n1,r1,V);
+    assume proposal(r1,v1);
+    vote(n1, r1, v1) := true
+  }
+}
+
+action decide = {
+  # get 2b from a quorum
+  local v:value, q:quorum, r:round {
+    assume member(N, q) -> vote(N, r, v);
+    decision(r,v) := true;
+      quorum_of_decision(r) := q
+  }
+}
+
+action join_round = {
+  # receive 1a and answer with 1b
+  local n:node, r1:round, r2:round {
+    # r1 is strictly smaller than r2:
+    assume r1 ~= r2;
+    assume le(r1,r2);
+    # node n1 is in round r1:
+    assume rnd(n,r1);
+    # node n1 joins r2:
+    rnd(n, R) := R = r2
+  }
+}
+
+action propose = {
+  local v:value, q:quorum, r1:round, r2:round, n:node {
+    assume ~proposal(r1,V);
+    assume member(N, q) & rnd(N,R) -> le(r1,R);
+
+      # find the latest vote in the quorum before round r1
+      if ~(member(N:node,q) & vote(N:node,R:round,V:value) & ~le(r1, R:round)) {
+          assume true
+      } else {
+          assume member(N,q) & vote(N,R,V) & ~le(r1, R) -> le(R,r2);
+        assume member(n,q) & vote(n,r2,v)
+      };
+    proposal(r1, v) := true;
+      quorum_of_proposal(r1) := q
+  }
+}
+
+export cast_vote
+export join_round
+export decide
+export propose
+
+# safety property:
+#conjecture decision(R1,V1) & decision(R2,V2) -> V1 = V2
+
+# invariants
+#conjecture ~le(R2,R1) & decision(R1, V1) & vote(N2, R2, V2) -> V1 = V2
+#conjecture ~le(R2,R1) & decision(R1, V1) & proposal(R2, V2) -> V1 = V2
+
+conjecture vote(N1,R,V1) & vote(N2,R,V2) -> V1 = V2
+conjecture vote(N,R,V) -> proposal(R,V)
+conjecture proposal(R,V1) & proposal(R,V2) -> V1 = V2
+
+conjecture member(N,quorum_of_decision(R))& decision(R,V) -> vote(N,R,V)
+
+# counter-example in 8 steps:
+# conjecture ~(decision(R1,V1) & decision(R2,V2) & R1 ~= R2)
+
+# counter-example in 11 steps:
+# conjecture ~(decision(R1,V1) & decision(R2,V2) & decision(R3,V3) & R1 ~= R2 & R3 ~= R2 & R1 ~= R3)
+
+# choosable_at(v, b) = member(N,Q) & rnd(N,R) & le(b,R) -> vote(N,b,v)
+# safe_at(v,b) = le(R,b) & choosable_at(V,R) -> V = v
+# safe: conjecture vote(N,R,V) -> safe_at(V,R)
+# promised(n,r1,r2,v) = (vote(n,r1,V1) -> V1 = v) & (le(r1,R) & r1 ~= R & le(R,r2) & R ~= r2 -> ~vote(n,R,V2))
+# conjecture: propose(R,V) -> (\E r . r ~= R & le(r,R) & (\E q n . member(n,Q) & vote(n,r,V) & (member(N,Q) -> promised(N,r,R,V))))

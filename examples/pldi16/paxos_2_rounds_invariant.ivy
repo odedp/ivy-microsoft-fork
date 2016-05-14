@@ -1,0 +1,132 @@
+#lang ivy1.3
+
+type node
+type value
+type quorum
+type round
+
+individual round1 : round
+individual round2 : round
+axiom round1 ~= round2
+
+relation member(N:node, Q:quorum)
+# forall Q1 Q2 exists N. member(N, Q1) & member(N, Q2)
+individual quorum_intersection(Q1:quorum, Q2:quorum) : node  # a Skolem function
+axiom member(quorum_intersection(Q1, Q2), Q1)
+axiom member(quorum_intersection(Q1, Q2), Q2)
+
+relation proposal1(V:value)
+# Q is the quorum used to derive the value to propose
+relation proposal2(Q:quorum, V:value)
+relation vote1(N:node, V:value)
+# Q is the quorum associated to the proposal that caused the vote
+relation vote2(N:node, Q:quorum, V:value)
+# Q is the quorum causing the decision
+relation decision1(N:node,Q:quorum,V:value)
+# Q1 is the quorum causing the decision, Q2 is the quorum that caused the votes in Q1
+relation decision2(N:node,Q1:quorum,Q2:quorum,V:value)
+relation rnd(N:node, R:round)
+
+init ~proposal1(V)
+init ~proposal2(Q,V)
+init ~vote1(N,V)
+init ~vote2(N,Q,V)
+init ~decision1(N,Q,V)
+init ~decision2(N,Q1,Q2,V)
+init rnd(N, round1)
+init (R ~= round1) -> ~rnd(N, R)
+
+action cast_vote1 = {
+  local n1:node, v1:value {
+    assume rnd(n1, round1);
+    assume ~vote1(n1,V);
+    assume proposal1(v1);
+    vote1(n1, v1) := true
+  }
+}
+
+action cast_vote2 = {
+  local n1:node, v1:value, q:quorum {
+    assume rnd(n1, round2);
+    assume ~vote2(n1,Q,V);
+    assume proposal2(q,v1);
+    vote2(n1, q, v1) := true
+  }
+}
+
+action join_round2 = { 
+  local n1:node {
+    assume rnd(n1,round1);
+    rnd(n1,round2) := true;
+    rnd(n1,round1) := false
+  }
+}
+
+action decide1 = {
+  local n1:node, v1:value, q:quorum {
+    assume ~decision1(n1,Q,V);
+    assume member(N, q) -> vote1(N, v1);
+    decision1(n1,q,v1) := true
+  }
+}
+
+action decide2 = {
+  local n1:node, v1:value, q1:quorum, q2:quorum {
+    assume ~decision2(n1,Q1,Q2,V);
+    assume member(N, q1) -> vote2(N, q2, v1);
+    decision2(n1,q1,q2,v1) := true
+  }
+}
+
+action propose1 = {
+  assume ~proposal1(V);
+  local v:value {
+    proposal1(v) := true
+  }
+}
+
+action propose2 = {
+  local v:value, q1:quorum {
+    assume ~proposal2(Q,V);
+    assume member(N, q1) -> rnd(N, round2);
+    assume (member(N, q1) & vote1(N, V)) -> V = v;
+    proposal2(q1,v) := true
+  }
+}
+
+export cast_vote1
+export cast_vote2
+export join_round2
+export decide1
+export decide2
+export propose1
+export propose2
+
+# safety property:
+conjecture (decision1(N1,Q1,V1) | decision2(N1,Q1,Q2,V1)) & (decision1(N2,Q3,V2) | decision2(N2,Q3,Q4,V2)) -> V1 = V2 
+# a proposal in round 2 comes from a quorum:
+conjecture proposal2(Q,V1) & member(N1,Q) -> (rnd(N1,round2) & (vote1(N1,V2) -> V1 = V2))
+# the round1 proposal is unique
+conjecture (proposal1(V1) & proposal1(V2)) -> V1 = V2
+# votes come from proposals
+conjecture ~(vote1(N,V) & ~proposal1(V))
+conjecture ~(vote2(N,Q,V) & ~proposal2(Q,V))
+#decisions come from quorums of votes:
+conjecture decision1(N,Q,V) & member(N2,Q) -> vote1(N2,V)
+conjecture decision2(N,Q1,Q2,V) & member(N2,Q1) -> vote2(N2,Q2,V)
+# proposal are unique
+conjecture proposal1(V1) & proposal1(V2) -> V1 = V2
+conjecture proposal2(Q1,V1) & proposal2(Q2,V2) -> V1 = V2
+# Round is unique
+conjecture  (rnd(N,R1) & rnd(N,R0)) -> R1 = R0
+
+# Other true conjectures:
+# A node is in round 1 or 2 
+#conjecture ~(~rnd(N,round1) & ~rnd(N,round2))
+# votes are unique:
+#conjecture vote1(N1, V1) & vote1(N1, V2) -> V1 = V2
+#conjecture vote2(N1, Q1, V1) & vote2(N1, Q2, V2) -> (Q1 = Q2 & V1 = V2)
+#conjecture (decision1(N,Q1,V1) & decision1(N,Q2,V2)) -> Q1 = Q2
+#conjecture (decision2(N,Q1,Q2,V1) & decision2(N,Q3,Q4,V2)) -> (Q1 = Q3 & Q2 = Q4)
+#conjecture (decision2(N1,Q1,Q2,V1) & decision2(N2,Q3,Q4,V2)) -> Q2 = Q4
+#conjecture proposal2(Q1,V1) & proposal2(Q2,V2) -> (V1 = V2 & Q1 = Q2)

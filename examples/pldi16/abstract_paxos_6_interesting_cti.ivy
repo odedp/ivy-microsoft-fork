@@ -1,0 +1,171 @@
+#lang ivy1.3
+
+module total_order(r) = {
+    axiom r(X,X)                        # Reflexivity
+    axiom r(X, Y) & r(Y, Z) -> r(X, Z)  # Transitivity
+    axiom r(X, Y) & r(Y, X) -> X = Y    # Anti-symmetry
+    axiom r(X, Y) | r(Y, X)             # Totality
+}
+
+type node
+type value
+type quorum
+type round
+
+individual zero : round
+individual none: round
+relation le(X:round, Y:round)
+instantiate total_order(le)
+axiom le(zero, X)
+axiom zero ~= none
+axiom le(X, none) # putting none at the end makes better visualizations
+
+relation member(N:node, Q:quorum)
+# forall Q1 Q2 exists N. member(N, Q1) & member(N, Q2)
+individual quorum_intersection(Q1:quorum, Q2:quorum) : node  # a Skolem function
+axiom member(quorum_intersection(Q1, Q2), Q1)
+axiom member(quorum_intersection(Q1, Q2), Q2)
+
+
+# ghost functions for recording the existence of quorums and voter nodes
+individual quorum_of_proposal(R:round) : quorum
+individual quorum_of_decision(R:round) : quorum
+individual voter_of_proposal(R:round) : node
+
+relation proposal(R1:round, V:value, R2:round) # 2a - R2 is ghost witness
+relation proposed(R:round) # proposed(R) = exists V,W. proposal(R,V,W)
+
+relation vote(N:node, R:round) # 2b
+relation decision(R:round) # got 2b from a quorum
+relation rnd(N:node, R:round) # rnd(n,r) means node n sent 1a to round r
+
+# A proposal is assumed both in vote and in decision. This is
+# effectively stating and instantiating the following "ghost
+# invariants":
+#
+# G-I-1 = forall R,N. vote(N,R) -> exists V,W. proposal(R,V,W)
+#
+# G-I-2 = forall R. decision(R) -> exists V,W. proposal(R,V,W)
+#
+
+init ~proposal(R,V,W)
+init ~proposed(R)
+init ~vote(N,R)
+init ~decision(R)
+init rnd(N, R) <-> R = zero
+
+action cast_vote = {
+    # phase 2b
+    local n:node, v:value, r:round, rw:round {
+        assume rnd(n, r) & (rnd(n,R) -> le(R,r));
+        assume proposal(r, v ,rw); # note that this maintains G-I-1
+        vote(n, r) := true
+    }
+}
+
+action decide = {
+  # get 2b from a quorum
+    local r:round, v:value, q:quorum, rw:round {
+        assume r ~= none;
+        assume member(N, q) -> vote(N, r);
+        assume proposal(r, v ,rw); # from G-I-1, note that this maintains G-I-2
+        quorum_of_decision(r) := q;
+        decision(r) := true
+    }
+}
+
+action join_round = {
+    # receive 1a and answer with 1b
+    local n:node, r:round {
+        assume r ~= none;
+        assume rnd(n,R) -> ~le(r,R);
+        # node n joins r2:
+        rnd(n, r) := true
+    }
+}
+
+action propose = {
+    local r:round, v:value, q:quorum, rw:round, rw2:round, voter:node {
+        assume r ~= none;
+        assume ~proposed(r); # assume ~proposal(r,V,W);
+        assume member(N, q) -> rnd(N,r);
+
+        # find the latest vote in the quorum before round r
+        if ~(member(VOTER:node,q) & vote(VOTER:node,RW:round) & proposal(RW:round, V:value, RW2:round) & ~le(r, RW:round)) {
+            assume rw = none
+        } else {
+            assume member(voter, q) & vote(voter, rw) & proposal(rw, v, rw2) & ~le(r, rw);
+            assume member(VOTER ,q) & vote(VOTER, RW) & proposal(RW, V, RW2) & ~le(r, RW) -> le(RW, rw)
+        };
+        proposal(r, v, rw) := true;
+        proposed(r) := true;
+        quorum_of_proposal(r) := q;
+        voter_of_proposal(r) := voter
+    }
+}
+
+export cast_vote
+export join_round
+export decide
+export propose
+
+# Bogus conjectures to test the system
+
+# counter-example in 7 steps:
+# conjecture ~(
+#     R1 ~= R2 &
+#     proposal(R1,V1,PW1) & decision(R1) &
+#     proposal(R2,V2,PW2) & decision(R2)
+# )
+
+# counter-example in 11 steps:
+# conjecture ~(
+#     R1 ~= R2 & R3 ~= R2 & R1 ~= R3 &
+#     proposal(R1,V1,PW1) & decision(R1) &
+#     proposal(R2,V2,PW2) & decision(R2) &
+#     proposal(R3,V3,PW3) & decision(R3)
+# )
+
+# safety property:
+conjecture (
+    proposal(R1,V1,RW1) & decision(R1) &
+    proposal(R2,V2,RW2) & decision(R2)
+) -> V1 = V2
+
+# adapted from 2_rounds_paxos_invariant.ivy
+
+# a proposal in round comes from a quorum:
+conjecture proposed(R) & member(N, quorum_of_proposal(R)) -> rnd(N, R)
+
+# proposals are unique per round
+conjecture proposal(R,V1,RW1) & proposal(R,V2,RW2) -> V1 = V2 & RW1 = RW2
+
+# decisions come from quorums of votes:
+conjecture decision(R) & member(N, quorum_of_decision(R)) -> vote(N,R)
+
+# only vote for joined rounds
+conjecture vote(N,R) -> rnd(N,R)
+
+# only vote for proposed rounds
+conjecture vote(N,R) -> proposed(R)
+
+# decisions are respected by future proposals
+conjecture le(R1, R2) & proposal(R1,V1,RW1) & decision(R1) & proposal(R2,V2,RW2) -> V1 = V2
+
+# properties of none
+conjecture ~proposal(none,V,RW)
+conjecture ~proposed(none)
+conjecture ~rnd(N,none)
+conjecture ~vote(N,none)
+conjecture ~decision(none)
+
+# from the definition of proposed
+conjecture proposal(R,V,W) -> proposed(R)
+
+# properties of proposal witness
+conjecture proposal(R,V,RW) & RW ~= none -> vote(voter_of_proposal(R), RW)
+# cannot say this (AE): conjecture proposal(R,V,RW) & RW ~= none -> exists RW2: proposal(RW, V, RW2)
+conjecture proposal(R,V,RW) & RW ~= none -> ~le(R, RW)
+conjecture ~le(R2, R1) & proposal(R1,V1,RW1) & proposal(R2,V2,RW2) & member(N, quorum_of_proposal(R2)) & vote(N, R1) -> RW2 ~= none
+conjecture ~le(R2, R1) & proposal(R1,V1,RW1) & proposal(R2,V2,RW2) & member(N, quorum_of_proposal(R2)) & vote(N, R1) -> le(R1, RW2)
+conjecture proposal(R,V1,RW) & proposal(RW,V2,RW2) -> V1 = V2
