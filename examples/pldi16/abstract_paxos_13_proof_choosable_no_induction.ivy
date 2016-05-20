@@ -1,0 +1,193 @@
+#lang ivy1.3
+
+################################################################################
+#
+# Modules that should probably come from a standard library
+#
+################################################################################
+
+################################################################################
+#
+# Module for axiomatizing a total order
+#
+################################################################################
+
+module total_order(r) = {
+    axiom r(X,X)                        # Reflexivity
+    axiom r(X, Y) & r(Y, Z) -> r(X, Z)  # Transitivity
+    axiom r(X, Y) & r(Y, X) -> X = Y    # Anti-symmetry
+    axiom r(X, Y) | r(Y, X)             # Totality
+}
+
+
+################################################################################
+#
+# Types, relations and functions describing state of the network
+#
+################################################################################
+
+type node
+type value
+type quorum
+type round
+
+individual first : round
+individual none: round
+relation le(X:round, Y:round)
+instantiate total_order(le)
+axiom le(none, X)
+axiom ~le(first, none)
+axiom ~le(X, none) -> le(first, X)
+
+relation member(N:node, Q:quorum)
+# forall Q1 Q2 exists N. member(N, Q1) & member(N, Q2)
+individual quorum_intersection(Q1:quorum, Q2:quorum) : node  # a Skolem function
+axiom member(quorum_intersection(Q1, Q2), Q1)
+axiom member(quorum_intersection(Q1, Q2), Q2)
+
+# ghost functions for recording the existence of quorums and voter nodes
+individual quorum_of_proposal(R:round) : quorum
+individual quorum_of_decision(R:round) : quorum
+
+relation proposal(R1:round, V:value) # 2a
+
+relation vote(N:node, R:round, V:value) # 2b
+relation decision(R:round, V:value) # got 2b from a quorum
+relation left_rnd(N:node, R:round) # left_rnd(n,r) means node n is no longer in round r
+
+# choosable(R, V, Q) = forall N. member(N,Q) & left_rnd(N,R) -> vote(N,R,V)
+# choosable(R, V, Q) -> forall N. member(N,Q) & left_rnd(N,R) -> vote(N,R,V)
+# ~choosable(R, V, Q) -> exists N. member(N,Q) & left_rnd(N,R) & ~vote(N,R,V)
+relation choosable(R:round, V:value, Q:quorum)
+init choosable(R, V, Q) <-> R ~= none
+individual node_of_choosable(R:round, V:value, Q:quorum) : node
+
+init ~proposal(R,V)
+init ~vote(N,R,V)
+init ~decision(R,V)
+init left_rnd(N, R) <-> R = none
+
+action cast_vote = {
+    # phase 2b
+    local n:node, v:value, r:round {
+        assume r ~= none;
+        assume ~left_rnd(n, r) & (~le(r,R) -> left_rnd(n,R));
+        assume proposal(r, v);
+        vote(n, r, v) := true
+    }
+}
+
+action decide = {
+  # get 2b from a quorum
+    local r:round, v:value, q:quorum {
+        assume r ~= none;
+        assume member(N, q) -> vote(N, r, v);
+        quorum_of_decision(r) := q;
+        decision(r, v) := true
+    }
+}
+
+action join_round = {
+    # receive 1a and answer with 1b
+    local n:node, r:round {
+        assume r ~= none;
+        assume ~left_rnd(n,r);
+        # node n joins r2:
+        left_rnd(n, R) := ~le(r,R);
+
+        # update choosable
+        choosable(R,V,Q) := choosable(R,V,Q) & ~(member(n,Q) & ~le(r,R) & ~vote(n,R,V));
+        # here we should update node_of_choosable using an ite
+        # term. instead, we'll just assume the following:
+        assume (
+            left_rnd(n,R) &
+            member(n,Q) &
+            ~vote(n,R,V)
+        ) -> (
+            left_rnd(node_of_choosable(R,V,Q),R) &
+            member(node_of_choosable(R,V,Q),Q) &
+            ~vote(node_of_choosable(R,V,Q),R,V)
+        )
+    }
+}
+
+action propose = {
+    local r:round, v:value, q:quorum, pr:round, voter:node {
+        assume r ~= none;
+        assume ~proposal(r,V);
+        assume member(N, q) & ~le(r,R) -> left_rnd(N,R);
+
+        # find the latest vote in the quorum before round r
+        if ~(member(VOTER:node, q) & vote(VOTER:node, PR:round, V:value) & ~le(r,  PR:round)) {
+            assume pr = none
+        } else {
+            assume member(voter, q) & vote(voter, pr, v) & ~le(r, pr);
+            assume member(VOTER ,q) & vote(VOTER, PR, V) & ~le(r, PR) -> le(PR, pr)
+        };
+        proposal(r, v) := true;
+        quorum_of_proposal(r) := q
+    }
+}
+
+export cast_vote
+export join_round
+export decide
+export propose
+
+# Bogus conjectures to test the system
+
+# # counter-example in 7 steps:
+# conjecture ~(
+#     R1 ~= R2 &
+#     decision(R1,V1) &
+#     decision(R2,V2)
+# )
+
+# # counter-example in 11 steps (takes about 10 minutes):
+# conjecture ~(
+#     R1 ~= R2 & R3 ~= R2 & R1 ~= R3 &
+#     decision(R1,V1) &
+#     decision(R2,V2) &
+#     decision(R3,V3)
+# )
+
+# # safety property:
+conjecture (
+    decision(R1,V1) &
+    decision(R2,V2)
+) -> V1 = V2
+
+# conjectures from the definition of choosable:
+# choosable(R, V, Q) = forall N. member(N,Q) & left_rnd(N,R) -> vote(N,R,V)
+# choosable(R, V, Q) -> forall N. member(N,Q) & left_rnd(N,R) -> vote(N,R,V)
+# ~choosable(R, V, Q) -> exists N. member(N,Q) & left_rnd(N,R) & ~vote(N,R,V)
+conjecture choosable(R,V,Q) & member(N,Q) & left_rnd(N,R) -> vote(N,R,V)
+conjecture ~choosable(R,V,Q) & R ~= none -> member(node_of_choosable(R,V,Q),Q) & left_rnd(node_of_choosable(R,V,Q),R) & ~vote(node_of_choosable(R,V,Q),R,V)
+
+# left_rnd is downward closed
+conjecture le(R1,R2) & left_rnd(N,R2) -> left_rnd(N,R1)
+
+# a proposal in round comes from a quorum:
+conjecture proposal(R2,V) & member(N, quorum_of_proposal(R2)) & ~le(R2,R1) -> left_rnd(N, R1)
+
+# proposals are unique per round
+conjecture proposal(R,V1) & proposal(R,V2) -> V1 = V2
+
+# decisions come from quorums of votes:
+conjecture decision(R,V) & member(N, quorum_of_decision(R)) -> vote(N,R,V)
+
+# only vote for joined rounds
+conjecture vote(N,R2,V) & ~le(R2,R1) -> left_rnd(N,R1)
+
+# only vote for proposed values
+conjecture vote(N,R,V) -> proposal(R,V)
+
+# properties of none
+conjecture ~proposal(none,V)
+conjecture left_rnd(N,none)
+conjecture ~vote(N,none,V)
+conjecture ~decision(none,V)
+conjecture ~choosable(none,V,Q)
+
+# properties of choosable and proposal
+conjecture ~le(R2,R1) & proposal(R2,V2) & choosable(R1,V1,Q) -> V1 = V2

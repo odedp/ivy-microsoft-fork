@@ -100,7 +100,7 @@ instantiate p_round : acyclic_partial_function(round) # a proposal round ghost p
 
 relation vote(N:node, R:round, V:value) # 2b
 relation decision(R:round, V:value) # got 2b from a quorum
-relation rnd(N:node, R:round) # rnd(n,r) means node n sent 1a to round r
+relation rnd(N:node, R:round) # rnd(n,r) means node n sent 1b to round r
 
 
 init ~proposal(R,V)
@@ -211,11 +211,13 @@ conjecture le(R1, R2) & decision(R1,V1) & proposal(R2,V2) -> V1 = V2
 # above conjecture, and then obtain its p_round.f
 individual min_bad_r1:round
 individual min_bad_r2:round
+individual min_bad_v1:value
+individual min_bad_v2:value
 individual min_bad_f:round
 axiom (
     # if R2 is a bad round w.r.t. R1, then min_bad_r2 is bad w.r.t. min_bad_r1, and R2 >= min_bad_r2
     (le(R1, R2) & decision(R1,V1) & proposal(R2,V2) & V1 ~= V2) -> (
-        (le(min_bad_r1, min_bad_r2) & decision(min_bad_r1,V1) & proposal(min_bad_r2,V2) & V1 ~= V2) &
+        (le(min_bad_r1, min_bad_r2) & decision(min_bad_r1,min_bad_v1) & proposal(min_bad_r2,min_bad_v2) & min_bad_v1 ~= min_bad_v2) &
         le(min_bad_r2, R2)
     )
 )
